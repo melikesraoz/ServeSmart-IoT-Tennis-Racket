@@ -4,6 +4,8 @@
 #include "AdafruitIO_WiFi.h"
 #include <ServeSmartClassifier_inferencing.h>
 
+
+
 #define IO_USERNAME  "melikesraoz"
 #define IO_KEY       "****"
 
@@ -50,15 +52,29 @@ void loop() {
   mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
   Serial.printf("Ham veri: ax=%d ay=%d az=%d gx=%d gy=%d gz=%d\n", ax, ay, az, gx, gy, gz);
 
-  float acc_raw = sqrt(ax * ax + ay * ay + az * az);
-  if (acc_raw < 500) {
+  float ax_g = ax / 16384.0;
+  float ay_g = ay / 16384.0;
+  float az_g = az / 16384.0;
+  
+  float acc_raw = sqrt(ax_g * ax_g + ay_g * ay_g + az_g * az_g);
+  float gravity_magnitude = 1.0; 
+  
+  if (abs(acc_raw - gravity_magnitude) < 0.2) {
     Serial.println("🔇 Hareket yok, sınıflandırma yapılmadı.");
-    feed_prediction->save("idle");
-    feed_comment->save("No motion");
+    feed_prediction->save("idle");  
+    feed_comment->save("Hareketsiz");
+    
+    vx = 0;
+    vy = 0;
+    vz = 0;
+    
+    feed_acc_total->save(0);
+    feed_velocity_total->save(0);
+    
     delay(2000);
     return;
   }
-
+  
   float features[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE] = {0};
   features[0] = ax;
   features[1] = ay;
@@ -88,21 +104,36 @@ void loop() {
     }
   }
 
-  float ax_mps2 = ax / 16384.0 * 9.80665;
-  float ay_mps2 = ay / 16384.0 * 9.80665;
-  float az_mps2 = (az / 16384.0 - 1.0) * 9.80665;  // gravity düzeltmesi
+  float ax_mps2 = ax_g * 9.80665;
+  float ay_mps2 = ay_g * 9.80665;
+  float az_mps2 = az_g * 9.80665;
+  
+  float motion_ax = ax_mps2;
+  float motion_ay = ay_mps2;
+  float motion_az = az_mps2 - 9.80665;
+  
+  // Hız hesabı
+  vx += motion_ax * dt;
+  vy += motion_ay * dt;
+  vz += motion_az * dt;
+  
+  if (abs(acc_raw - gravity_magnitude) < 0.2) {
+    vx = 0;
+    vy = 0;
+    vz = 0;
+  }
 
-  vx += ax_mps2 * dt;
-  vy += ay_mps2 * dt;
-  vz += az_mps2 * dt;
-
-  float acc_total = sqrt(ax_mps2 * ax_mps2 + ay_mps2 * ay_mps2 + az_mps2 * az_mps2);
+  float acc_total = sqrt(motion_ax * motion_ax + motion_ay * motion_ay + motion_az * motion_az);
   float velocity_total = sqrt(vx * vx + vy * vy + vz * vz);
 
   String comment = "Good";
-  if (confidence < 0.6) comment = "Low confidence";
-  else if (acc_total < 1.2) comment = "Too slow";
-  else if (prediction == "idle") comment = "No shot";
+  if (confidence < 0.5) {
+    comment = "Tanımlanamayan hareket";
+    prediction = "unknown";  
+  }
+  else if (acc_total < 1.2) comment = "Çok yavaş vuruş";
+  else if (acc_total > 4.0) comment = "Çok sert vuruş";
+  else comment = "İyi vuruş";
 
   Serial.printf("Prediction: %s (%.2f)\n", prediction.c_str(), confidence);
   Serial.printf("Ivme: %.2f m/s² | Hiz: %.2f m/s | Yorum: %s\n", acc_total, velocity_total, comment.c_str());
